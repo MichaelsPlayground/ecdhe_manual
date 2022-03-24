@@ -181,6 +181,8 @@ class _MyWidgetState extends State<MyWidget> {
     // https://pub.dev/packages/blake2b blake2b: ^0.2.2
     // https://github.com/riclava/blake2b
 
+    // pointycastle !!
+
     var dig = pc.Blake2bDigest(digestSize: 12);
     //var input = createUint8ListFromHexString(publicBob.toCompressedHex());
     var input = createUint8ListFromHexString(publicEphemeral.toHex());
