@@ -159,7 +159,11 @@ class _MyWidgetState extends State<MyWidget> {
     printC('ciphertext: ' + ciphertext);
 
     printC('\n*** now running ECDHE ***');
-    printC('all we have is Bobs keypair');
+    printC('all we have is Bobs = recipients public key');
+    var publicBobHex = publicBob.toHex();
+    printC('Bobs publicKey (hex): ' + publicBobHex);
+    var publicRecipient = ec.hexToPublicKey(publicBobHex);
+
     // constants
     var NONCEBYTES = 12;
     var PUBLICKEYBYTES = 32;
@@ -181,20 +185,56 @@ class _MyWidgetState extends State<MyWidget> {
     // https://pub.dev/packages/blake2b blake2b: ^0.2.2
     // https://github.com/riclava/blake2b
 
-    // pointycastle !!
+    // lib for blake2b
+    // https://pub.dev/packages/pointycastle pointycastle: ^3.5.2
+    // https://github.com/bcgit/pc-dart
 
-    var dig = pc.Blake2bDigest(digestSize: 12);
-    //var input = createUint8ListFromHexString(publicBob.toCompressedHex());
-    var input = createUint8ListFromHexString(publicEphemeral.toHex());
-    printC('input = pubKey length: ' + input.lengthInBytes.toString());
-    dig.update(input, 0, input.length);
-    input = createUint8ListFromHexString(publicBob.toHex());
-    dig.update(input, 0, input.length);
-    Uint8List nonceNew = new Uint8List(12);
-    var number = 0;
-    number = dig.doFinal(nonceNew, 0);
-    printC('number: ' + number.toString());
-    printC('nonce base64: ' + base64.encode(nonceNew));
+    // generate nonce by hashing the public keys with Blake2b
+    var nonceBlake2b = getNonceByBlake2b(publicEphemeral.toHex(), publicRecipient.toHex(), NONCEBYTES);
+    // todo: check nonce length and NOT filled with 'x00'
+    printC('nonceBlake2b base64: ' + base64.encode(nonceBlake2b));
+    // generate ecdh key
+    var secretKeySender = computeSecret(privateEphemeral, publicRecipient);
+    // encrypt the plaintext
+    var ciphertextSender = aesGcmToUint8List(secretKeySender, nonce, plaintext);
+    printC('cipertextSender base64: ' + base64Encoding(ciphertextSender));
+
+    // convert publicEphemeralUint8List.length to byte array
+    // first convert the publicEphemeral to a Uint8List
+    Uint8List publicEphemeralUint8List = createUint8ListFromHexString(publicEphemeral.toHex());
+    int publicEphemeralLength = publicEphemeralUint8List.lengthInBytes;
+    printC('publicEphemeralLength: ' + publicEphemeralLength.toString());
+    String publicEphemeralLengthHex = publicEphemeralLength.toRadixString(16).padLeft(4, '0');
+    printC('publicEphemeralLengthHex: ' + publicEphemeralLengthHex); //
+    var publicEphemeralLengthHexUint8List = createUint8ListFromString(publicEphemeralLengthHex);
+    printC('publicEphemeralLengthHexUint8List length: ' + publicEphemeralLengthHexUint8List.lengthInBytes.toString());
+
+    // the output is publicEphemeral ciphertext
+    var bbSender = BytesBuilder();
+    printC('publicEphemeral hex: ' + publicEphemeral.toHex());
+    bbSender.add(publicEphemeralLengthHexUint8List); // length of the following publicEphemeral
+    bbSender.add(createUint8ListFromHexString(publicEphemeral.toHex()));
+    bbSender.add(ciphertextSender);
+    var sealedBoxSender = bbSender.toBytes();
+    var sealedBoxSenderBase64 = base64Encoding(sealedBoxSender);
+    printC('sealedBox base64: ' + sealedBoxSenderBase64);
+
+    printC('\n*** decryption on Bobs = recipients side ***');
+    printC('Bob receives the sealedBoxSenderBase64');
+    var sealedBoxRecipient = base64Decoding(sealedBoxSenderBase64);
+    printC('sealedBoxRecipientLength: ' + sealedBoxRecipient.lengthInBytes.toString());
+    // split the sealedBox in publicKeySenderLength, publicKeySender and ciphertext
+    Uint8List publicKeySenderLengthUint8List = Uint8List.sublistView(sealedBoxRecipient, 0, 1);
+    // convert the data back to int
+    String publicEphemeralLengthHexBack = new String.fromCharCodes(publicKeySenderLengthUint8List);
+    printC('publicEphemeralLengthHexBack: ' + publicEphemeralLengthHexBack);
+    int publicEphemeralLengthBack = int.parse(publicEphemeralLengthHexBack, radix: 16);
+    //int publicEphemeralLengthBack = int.parse('0041', radix: 16);
+    printC('publicEphemeralLengthBack: ' + publicEphemeralLengthBack.toString());
+
+
+
+
     /*
     printC('the actual time is:');
     for( var i = 0 ; i < 30; i++) {
@@ -233,6 +273,52 @@ class _MyWidgetState extends State<MyWidget> {
     }
   }
 
+  Uint8List aesGcmToUint8List(
+      List<int> key, Uint8List nonce, String plaintext) {
+    try {
+      var plaintextUint8 = createUint8ListFromString(plaintext);
+
+      final cipher = pc.GCMBlockCipher(pc.AESEngine());
+      var aeadParameters =
+      pc.AEADParameters(pc.KeyParameter(Uint8List.fromList(key)), 128, nonce, Uint8List(0));
+      cipher.init(true, aeadParameters);
+      var ciphertextWithTag = cipher.process(plaintextUint8);
+      return ciphertextWithTag;
+      /*
+      var ciphertextWithTagLength = ciphertextWithTag.lengthInBytes;
+      var ciphertextLength =
+          ciphertextWithTagLength - 16; // 16 bytes = 128 bit tag length
+      var ciphertext =
+      Uint8List.sublistView(ciphertextWithTag, 0, ciphertextLength);
+      var gcmTag = Uint8List.sublistView(
+          ciphertextWithTag, ciphertextLength, ciphertextWithTagLength);
+      final nonceBase64 = base64.encode(nonce);
+      final ciphertextBase64 = base64.encode(ciphertext);
+      final gcmTagBase64 = base64.encode(gcmTag);
+      return nonceBase64 +
+          ':' +
+          ciphertextBase64 +
+          ':' +
+          gcmTagBase64;*/
+    } catch (error) {
+      return Uint8List(0);
+    }
+  }
+
+  // awaits the publicKeys as hex encoded strings, returns the hashed result
+  Uint8List getNonceByBlake2b(String publicKeySender, String publicKeyRecipient, int nonceBytes) {
+    var dig = pc.Blake2bDigest(digestSize: nonceBytes);
+    //var input = createUint8ListFromHexString(publicBob.toCompressedHex());
+    var input = createUint8ListFromHexString(publicKeySender);
+    printC('input = pubKey length: ' + input.lengthInBytes.toString());
+    dig.update(input, 0, input.length);
+    input = createUint8ListFromHexString(publicKeyRecipient);
+    dig.update(input, 0, input.length);
+    Uint8List nonceNew = new Uint8List(nonceBytes);
+    var number = 0;
+    number = dig.doFinal(nonceNew, 0);
+    return nonceNew;
+  }
 
   Uint8List generateRandomNonce() {
     final _sGen = Random.secure();
